@@ -80,7 +80,7 @@ export async function generateAndShow(
   vulnsForFile: VulcanVuln[],
   document: vscode.TextDocument
 ): Promise<void> {
-  const token = await auth.requireToken();
+  let token = await auth.requireToken();
   if (!token) {
     return;
   }
@@ -99,7 +99,7 @@ export async function generateAndShow(
     },
     async () => {
       try {
-        const patch = await api.generatePatch(vuln, token);
+        const patch = await api.generatePatch(vuln, token!);
         patchCache.set(vulnId, patch);
 
         // Build patched content
@@ -141,6 +141,28 @@ export async function generateAndShow(
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
+
+        // Token expired or invalidated — clear it and prompt re-login
+        if (msg.includes("401") || msg.toLowerCase().includes("invalid token") || msg.toLowerCase().includes("not authenticated")) {
+          await auth.clearToken();
+          const action = await vscode.window.showErrorMessage(
+            "Vulcan: Session expired. Please log in again.",
+            "Login"
+          );
+          if (action === "Login") {
+            vscode.commands.executeCommand("vulcan.panel.focus");
+          }
+          return;
+        }
+
+        // Role/permission error
+        if (msg.includes("403") || msg.toLowerCase().includes("not authorized") || msg.toLowerCase().includes("forbidden")) {
+          vscode.window.showErrorMessage(
+            "Vulcan: Your account does not have permission to generate patches. Contact your admin."
+          );
+          return;
+        }
+
         vscode.window.showErrorMessage(`Vulcan patch generation failed: ${msg}`);
       }
     }
