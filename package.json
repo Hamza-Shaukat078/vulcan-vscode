@@ -1,0 +1,107 @@
+{
+  "name": "vulcan-security",
+  "displayName": "Vulcan Security",
+  "description": "Real-time vulnerability detection and AI-powered patch generation for Python and JavaScript",
+  "version": "0.1.0",
+  "publisher": "vulcan",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Linters", "Other"],
+  "icon": "media/vulcan-icon.png",
+  "activationEvents": [
+    "onLanguage:python",
+    "onLanguage:javascript",
+    "onLanguage:typescript"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Vulcan Security",
+      "properties": {
+        "vulcan.backendUrl": {
+          "type": "string",
+          "default": "http://localhost:8000",
+          "description": "Vulcan backend base URL"
+        },
+        "vulcan.scanOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically scan files on save"
+        },
+        "vulcan.enableLLM": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable LLM-powered classification during scans"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "vulcan.login",
+        "title": "Vulcan: Login"
+      },
+      {
+        "command": "vulcan.logout",
+        "title": "Vulcan: Logout"
+      },
+      {
+        "command": "vulcan.scanFile",
+        "title": "Vulcan: Scan Current File",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "vulcan.generatePatch",
+        "title": "Vulcan: Generate Patch",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "vulcan.approvePatch",
+        "title": "Vulcan: Approve Patch"
+      },
+      {
+        "command": "vulcan.rejectPatch",
+        "title": "Vulcan: Reject Patch"
+      },
+      {
+        "command": "vulcan.clearDiagnostics",
+        "title": "Vulcan: Clear All Diagnostics"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "vulcan-sidebar",
+          "title": "Vulcan Security",
+          "icon": "media/vulcan-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "vulcan-sidebar": [
+        {
+          "id": "vulcan.vulnerabilities",
+          "name": "Vulnerabilities"
+        }
+      ]
+    },
+    "menus": {
+      "editor/title": [
+        {
+          "command": "vulcan.scanFile",
+          "when": "resourceLangId == python || resourceLangId == javascript || resourceLangId == typescript",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.22.0",
+    "typescript": "^5.3.0"
+  }
+}
