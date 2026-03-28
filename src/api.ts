@@ -4,10 +4,11 @@ import * as https from "https";
 import { LoginResponse, ScanResult, PatchResult, VulcanVuln } from "./types";
 
 function baseUrl(): string {
-  return vscode.workspace
+  const url = vscode.workspace
     .getConfiguration("vulcan")
     .get<string>("backendUrl", "http://localhost:8000")
     .replace(/\/$/, "");
+  return url + "/api/v1";
 }
 
 function request<T>(
