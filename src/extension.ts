@@ -5,7 +5,7 @@ import * as statusBar from "./statusBar";
 import * as api from "./api";
 import { VulcanHoverProvider } from "./hoverProvider";
 import { VulcanCodeLensProvider } from "./codelensProvider";
-import { VulcanSidebarProvider } from "./sidebarProvider";
+import { VulcanWebviewProvider } from "./webviewProvider";
 import {
   PatchContentProvider,
   contentProvider,
@@ -13,78 +13,119 @@ import {
 } from "./patchProvider";
 
 const SUPPORTED_LANGS = ["python", "javascript", "typescript"];
-const CHANGE_DEBOUNCE_MS = 1000; // debounce for typing
-const MAX_CONCURRENT_SCANS = 3;  // max parallel API calls during workspace scan
-const MAX_FILE_LINES = 600;      // skip very large files
+const CHANGE_DEBOUNCE_MS = 1000;
+const MAX_CONCURRENT_SCANS = 3;
+const MAX_FILE_LINES = 600;
 
-let sidebar: VulcanSidebarProvider;
 let codelens: VulcanCodeLensProvider;
+let webview: VulcanWebviewProvider;
 
-// Per-document debounce timers (keyed by URI string)
 const changeTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-// Track which URIs have been scanned this session so we don't double-scan
-const scannedUris = new Set<string>();
-
-// Track ongoing workspace scan so we don't start two at once
+const scannedUris  = new Set<string>();
 let workspaceScanRunning = false;
 
 export function activate(context: vscode.ExtensionContext): void {
-  // ── Init modules ──────────────────────────────────────────────────────────
   auth.init(context);
   diagStore.init(context);
   statusBar.init(context);
 
-  // ── Providers ─────────────────────────────────────────────────────────────
   codelens = new VulcanCodeLensProvider();
-  sidebar = new VulcanSidebarProvider();
+  webview  = new VulcanWebviewProvider(context);
 
+  // ── Wire webview callbacks ─────────────────────────────────────────────
+  webview.onLogin(async (email, password) => {
+    try {
+      const res = await api.login(email, password);
+      await auth.setToken(res.access_token);
+      webview.setLoggedIn(email);
+      statusBar.setIdle();
+      await scanWorkspace();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      webview.setLoginError(msg);
+    }
+  });
+
+  webview.onLogout(async () => {
+    await auth.logout();
+    diagStore.clearAll();
+    scannedUris.clear();
+    codelens.refresh();
+    statusBar.setLoggedOut();
+    webview.setLoggedOut();
+  });
+
+  webview.onScanFile(async () => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || !SUPPORTED_LANGS.includes(editor.document.languageId)) {
+      webview.setScanStatus("Open a Python or JS file first", undefined);
+      setTimeout(() => webview.setScanIdle(), 2000);
+      return;
+    }
+    scannedUris.delete(editor.document.uri.toString());
+    await scanDocument(editor.document);
+    webview.setScanIdle();
+  });
+
+  webview.onScanWorkspace(async () => {
+    scannedUris.clear();
+    await scanWorkspace();
+  });
+
+  webview.onGeneratePatch(async (vulnId) => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) { return; }
+    const vulns = diagStore.getVulnsForUri(editor.document.uri);
+    // Also search all files if not in current editor
+    const allVulns = [...diagStore.allVulns().values()].flat();
+    const found = vulns.find(v => v.id === vulnId) ?? allVulns.find(v => v.id === vulnId);
+    if (!found) { return; }
+    await generateAndShow(vulnId, [found, ...vulns], editor.document);
+  });
+
+  // ── Providers ────────────────────────────────────────────────────────────
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(
       PatchContentProvider.scheme,
       contentProvider
     ),
     vscode.languages.registerHoverProvider(
-      SUPPORTED_LANGS.map((l) => ({ language: l })),
+      SUPPORTED_LANGS.map(l => ({ language: l })),
       new VulcanHoverProvider()
     ),
     vscode.languages.registerCodeLensProvider(
-      SUPPORTED_LANGS.map((l) => ({ language: l })),
+      SUPPORTED_LANGS.map(l => ({ language: l })),
       codelens
     ),
-    vscode.window.registerTreeDataProvider("vulcan.vulnerabilities", sidebar)
+    vscode.window.registerWebviewViewProvider(
+      VulcanWebviewProvider.viewType,
+      webview,
+      { webviewOptions: { retainContextWhenHidden: true } }
+    )
   );
 
-  // ── Commands ──────────────────────────────────────────────────────────────
+  // ── Commands ─────────────────────────────────────────────────────────────
   context.subscriptions.push(
     vscode.commands.registerCommand("vulcan.login", async () => {
-      const ok = await auth.login();
-      if (ok) {
-        statusBar.setIdle();
-        // Start workspace scan right after login
-        await scanWorkspace();
-      }
+      // Show the sidebar panel so the login form is visible
+      vscode.commands.executeCommand("vulcan.panel.focus");
     }),
 
     vscode.commands.registerCommand("vulcan.logout", async () => {
       await auth.logout();
       diagStore.clearAll();
       scannedUris.clear();
-      sidebar.refresh();
       codelens.refresh();
       statusBar.setLoggedOut();
+      webview.setLoggedOut();
     }),
 
     vscode.commands.registerCommand("vulcan.scanFile", async () => {
       const editor = vscode.window.activeTextEditor;
-      if (!editor || !SUPPORTED_LANGS.includes(editor.document.languageId)) {
-        vscode.window.showWarningMessage(
-          "Vulcan: Open a Python or JavaScript file to scan."
-        );
-        return;
-      }
-      scannedUris.delete(editor.document.uri.toString()); // force rescan
+      if (!editor || !SUPPORTED_LANGS.includes(editor.document.languageId)) { return; }
+      scannedUris.delete(editor.document.uri.toString());
       await scanDocument(editor.document);
+      webview.setScanIdle();
     }),
 
     vscode.commands.registerCommand("vulcan.scanWorkspace", async () => {
@@ -92,133 +133,98 @@ export function activate(context: vscode.ExtensionContext): void {
       await scanWorkspace();
     }),
 
-    vscode.commands.registerCommand(
-      "vulcan.generatePatch",
-      async (vulnId: string) => {
-        const editor = vscode.window.activeTextEditor;
-        if (!editor) {
-          vscode.window.showWarningMessage("Vulcan: No active editor.");
-          return;
-        }
-        const vulns = diagStore.getVulnsForUri(editor.document.uri);
-        await generateAndShow(vulnId, vulns, editor.document);
-      }
-    ),
+    vscode.commands.registerCommand("vulcan.generatePatch", async (vulnId: string) => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) { return; }
+      const vulns = diagStore.getVulnsForUri(editor.document.uri);
+      await generateAndShow(vulnId, vulns, editor.document);
+    }),
 
     vscode.commands.registerCommand("vulcan.clearDiagnostics", () => {
       diagStore.clearAll();
       scannedUris.clear();
-      sidebar.refresh();
       codelens.refresh();
       statusBar.setIdle();
+      webview.updateVulns();
     })
   );
 
   // ── Real-time file watchers ───────────────────────────────────────────────
-
-  // 1. Scan every file as it's opened in an editor
   context.subscriptions.push(
-    vscode.window.onDidChangeActiveTextEditor(async (editor) => {
+    // Scan every file as it becomes active (once per session)
+    vscode.window.onDidChangeActiveTextEditor(async editor => {
       if (!editor) { return; }
       const doc = editor.document;
       if (!SUPPORTED_LANGS.includes(doc.languageId)) { return; }
-      // Only scan if we haven't scanned this file this session
       if (scannedUris.has(doc.uri.toString())) { return; }
       await scanDocument(doc);
-    })
-  );
+      webview.setScanIdle();
+    }),
 
-  // 2. Re-scan while typing (debounced — waits 1s after last keystroke)
-  context.subscriptions.push(
-    vscode.workspace.onDidChangeTextDocument((event) => {
+    // Re-scan while typing (debounced)
+    vscode.workspace.onDidChangeTextDocument(event => {
       const doc = event.document;
       if (!SUPPORTED_LANGS.includes(doc.languageId)) { return; }
       if (event.contentChanges.length === 0) { return; }
-
       const key = doc.uri.toString();
-      const existing = changeTimers.get(key);
-      if (existing) { clearTimeout(existing); }
-
-      const timer = setTimeout(async () => {
+      const t = changeTimers.get(key);
+      if (t) { clearTimeout(t); }
+      changeTimers.set(key, setTimeout(async () => {
         changeTimers.delete(key);
-        scannedUris.delete(key); // mark stale so it rescans
+        scannedUris.delete(key);
         await scanDocument(doc);
-      }, CHANGE_DEBOUNCE_MS);
+        webview.setScanIdle();
+      }, CHANGE_DEBOUNCE_MS));
+    }),
 
-      changeTimers.set(key, timer);
-    })
-  );
-
-  // 3. Also re-scan on save (immediate, no debounce)
-  context.subscriptions.push(
-    vscode.workspace.onDidSaveTextDocument(async (doc) => {
+    // Re-scan on save (cancels pending change timer)
+    vscode.workspace.onDidSaveTextDocument(async doc => {
       if (!SUPPORTED_LANGS.includes(doc.languageId)) { return; }
-      // Cancel any pending change debounce for this file
       const key = doc.uri.toString();
-      const existing = changeTimers.get(key);
-      if (existing) {
-        clearTimeout(existing);
-        changeTimers.delete(key);
-      }
+      const t = changeTimers.get(key);
+      if (t) { clearTimeout(t); changeTimers.delete(key); }
       scannedUris.delete(key);
       await scanDocument(doc);
-    })
-  );
+      webview.setScanIdle();
+    }),
 
-  // 4. Clear diagnostics when a file is deleted
-  context.subscriptions.push(
-    vscode.workspace.onDidDeleteFiles((event) => {
+    // Clear stale diagnostics on file delete
+    vscode.workspace.onDidDeleteFiles(event => {
       for (const uri of event.files) {
         diagStore.clearUri(uri);
         scannedUris.delete(uri.toString());
       }
-      sidebar.refresh();
+      webview.updateVulns();
+      codelens.refresh();
     })
   );
 
-  // ── Startup: auto-scan the whole workspace ────────────────────────────────
-  // Small delay to let VS Code finish initialising before we fire off requests
+  // ── Startup ──────────────────────────────────────────────────────────────
   setTimeout(() => startupScan(), 1500);
 }
 
-// ── Startup scan ─────────────────────────────────────────────────────────────
+// ── Startup ───────────────────────────────────────────────────────────────
 
 async function startupScan(): Promise<void> {
   const token = await auth.getToken();
-
   if (!token) {
-    // Not logged in — show a one-time prompt
     statusBar.setLoggedOut();
-    const action = await vscode.window.showInformationMessage(
-      "Vulcan Security: Log in to start real-time vulnerability scanning.",
-      "Login Now",
-      "Later"
-    );
-    if (action === "Login Now") {
-      const ok = await auth.login();
-      if (ok) {
-        await scanWorkspace();
-      }
-    }
+    // Open the panel so the login form is immediately visible
+    vscode.commands.executeCommand("vulcan.panel.focus");
     return;
   }
-
   await scanWorkspace();
 }
 
-// ── Workspace-wide scan ───────────────────────────────────────────────────────
+// ── Workspace scan ────────────────────────────────────────────────────────
 
 async function scanWorkspace(): Promise<void> {
   if (workspaceScanRunning) { return; }
   workspaceScanRunning = true;
 
   const token = await auth.getToken();
-  if (!token) {
-    workspaceScanRunning = false;
-    return;
-  }
+  if (!token) { workspaceScanRunning = false; return; }
 
-  // Find all supported files, excluding build/dependency dirs
   const exclude = "**/{node_modules,.venv,venv,__pycache__,dist,build,.git}/**";
   const [pyFiles, jsFiles] = await Promise.all([
     vscode.workspace.findFiles("**/*.py", exclude, 200),
@@ -226,113 +232,81 @@ async function scanWorkspace(): Promise<void> {
   ]);
 
   const allFiles = [...pyFiles, ...jsFiles].filter(
-    (uri) => !scannedUris.has(uri.toString())
+    uri => !scannedUris.has(uri.toString())
   );
 
   if (allFiles.length === 0) {
     workspaceScanRunning = false;
     statusBar.setIdle();
+    webview.setScanIdle();
     return;
   }
 
-  await vscode.window.withProgress(
-    {
-      location: vscode.ProgressLocation.Notification,
-      title: "Vulcan: Scanning workspace",
-      cancellable: true,
-    },
-    async (progress, token_cancel) => {
-      let done = 0;
-      let totalVulns = 0;
+  let done = 0;
+  let totalVulns = 0;
 
-      // Process in batches of MAX_CONCURRENT_SCANS
-      for (let i = 0; i < allFiles.length; i += MAX_CONCURRENT_SCANS) {
-        if (token_cancel.isCancellationRequested) { break; }
+  for (let i = 0; i < allFiles.length; i += MAX_CONCURRENT_SCANS) {
+    const batch = allFiles.slice(i, i + MAX_CONCURRENT_SCANS);
+    await Promise.all(batch.map(async uri => {
+      try {
+        const doc = await vscode.workspace.openTextDocument(uri);
+        if (doc.lineCount > MAX_FILE_LINES) { return; }
+        totalVulns += await scanDocumentSilent(doc, token);
+      } catch { /* skip */ }
+    }));
 
-        const batch = allFiles.slice(i, i + MAX_CONCURRENT_SCANS);
-
-        await Promise.all(
-          batch.map(async (uri) => {
-            try {
-              const doc = await vscode.workspace.openTextDocument(uri);
-              if (doc.lineCount > MAX_FILE_LINES) { return; } // skip huge files
-              const count = await scanDocumentSilent(doc, token);
-              totalVulns += count;
-            } catch {
-              // skip files that can't be opened
-            }
-          })
-        );
-
-        done += batch.length;
-        const pct = Math.round((done / allFiles.length) * 100);
-        progress.report({
-          message: `${done}/${allFiles.length} files — ${totalVulns} issues found`,
-          increment: (batch.length / allFiles.length) * 100,
-        });
-
-        // Update status bar live
-        const allVulns = [...diagStore.allVulns().values()].flat();
-        const crits = allVulns.filter((v) => v.severity === "CRITICAL").length;
-        const highs = allVulns.filter((v) => v.severity === "HIGH").length;
-        statusBar.setResults(crits, highs, allVulns.length);
-        sidebar.refresh();
-        codelens.refresh();
-      }
-
-      // Final summary notification
-      if (totalVulns > 0) {
-        const action = await vscode.window.showWarningMessage(
-          `Vulcan: Found ${totalVulns} vulnerabilit${totalVulns !== 1 ? "ies" : "y"} across ${allFiles.length} files.`,
-          "Show Panel"
-        );
-        if (action === "Show Panel") {
-          vscode.commands.executeCommand("vulcan.vulnerabilities.focus");
-        }
-      } else {
-        vscode.window.showInformationMessage(
-          `Vulcan: Scanned ${allFiles.length} files — no vulnerabilities found.`
-        );
-      }
-    }
-  );
+    done += batch.length;
+    const pct = done / allFiles.length;
+    const name = allFiles[Math.min(i, allFiles.length - 1)].fsPath.split(/[\\/]/).pop();
+    webview.setScanStatus(
+      `${done}/${allFiles.length} files — ${totalVulns} issue${totalVulns !== 1 ? "s" : ""} found`,
+      pct
+    );
+    statusBar.setScanning();
+    webview.updateVulns();
+    codelens.refresh();
+  }
 
   workspaceScanRunning = false;
+  webview.setScanIdle();
+  webview.updateVulns();
+  codelens.refresh();
+
+  const allVulns = [...diagStore.allVulns().values()].flat();
+  const crits = allVulns.filter(v => v.severity === "CRITICAL").length;
+  const highs = allVulns.filter(v => v.severity === "HIGH").length;
+  statusBar.setResults(crits, highs, allVulns.length);
+
+  if (totalVulns > 0) {
+    vscode.window.showWarningMessage(
+      `Vulcan: ${totalVulns} vulnerabilit${totalVulns !== 1 ? "ies" : "y"} found across workspace.`,
+      "Show Panel"
+    ).then(a => { if (a === "Show Panel") vscode.commands.executeCommand("vulcan.panel.focus"); });
+  }
 }
 
-// ── Per-document scan (with status bar updates + notifications) ───────────────
+// ── Per-document scan ─────────────────────────────────────────────────────
 
 async function scanDocument(doc: vscode.TextDocument): Promise<void> {
   const token = await auth.getToken();
-  if (!token) {
-    statusBar.setLoggedOut();
-    return;
-  }
+  if (!token) { statusBar.setLoggedOut(); return; }
 
+  const fname = doc.fileName.split(/[\\/]/).pop() ?? "file";
   statusBar.setScanning();
-  const count = await scanDocumentSilent(doc, token);
+  webview.setScanStatus(`Scanning ${fname}…`);
+
+  await scanDocumentSilent(doc, token);
+
   codelens.refresh();
-  sidebar.refresh();
+  webview.updateVulns();
 
-  // Update status bar with total across all files
   const allVulns = [...diagStore.allVulns().values()].flat();
-  const crits = allVulns.filter((v) => v.severity === "CRITICAL").length;
-  const highs = allVulns.filter((v) => v.severity === "HIGH").length;
+  const crits = allVulns.filter(v => v.severity === "CRITICAL").length;
+  const highs = allVulns.filter(v => v.severity === "HIGH").length;
   statusBar.setResults(crits, highs, allVulns.length);
-
-  if (count > 0) {
-    const fname = doc.fileName.split(/[\\/]/).pop();
-    const action = await vscode.window.showWarningMessage(
-      `Vulcan: ${count} vulnerabilit${count !== 1 ? "ies" : "y"} in ${fname}`,
-      "Show Panel"
-    );
-    if (action === "Show Panel") {
-      vscode.commands.executeCommand("vulcan.vulnerabilities.focus");
-    }
-  }
 }
 
-// ── Core scan — returns vuln count, no notifications ─────────────────────────
+// ── Core scan (no UI side-effects) ────────────────────────────────────────
 
 async function scanDocumentSilent(
   doc: vscode.TextDocument,
@@ -356,21 +330,13 @@ async function scanDocumentSilent(
     if (msg.includes("401") || msg.toLowerCase().includes("unauthorized")) {
       await auth.clearToken();
       statusBar.setLoggedOut();
-      const action = await vscode.window.showErrorMessage(
-        "Vulcan: Session expired.",
-        "Login"
-      );
-      if (action === "Login") {
-        await auth.login();
-      }
+      webview.setLoggedOut();
     }
     return 0;
   }
 }
 
 export function deactivate(): void {
-  for (const timer of changeTimers.values()) {
-    clearTimeout(timer);
-  }
+  for (const t of changeTimers.values()) { clearTimeout(t); }
   changeTimers.clear();
 }

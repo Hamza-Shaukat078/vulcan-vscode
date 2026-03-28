@@ -83,8 +83,9 @@
     "views": {
       "vulcan-sidebar": [
         {
-          "id": "vulcan.vulnerabilities",
-          "name": "Vulnerabilities"
+          "id": "vulcan.panel",
+          "name": "Vulcan Security",
+          "type": "webview"
         }
       ]
     },

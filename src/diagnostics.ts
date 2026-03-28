@@ -1,9 +1,9 @@
 import * as vscode from "vscode";
 import { VulcanVuln } from "./types";
 
-// Severity → VS Code DiagnosticSeverity
+// Severity → VS Code DiagnosticSeverity (case-insensitive — backend returns lowercase)
 function toDiagSeverity(sev: string): vscode.DiagnosticSeverity {
-  switch (sev) {
+  switch ((sev ?? "").toUpperCase()) {
     case "CRITICAL":
     case "HIGH":
       return vscode.DiagnosticSeverity.Error;
