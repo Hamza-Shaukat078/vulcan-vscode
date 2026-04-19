@@ -7,8 +7,11 @@ export interface VulcanVuln {
   cwe?: string;
   location: {
     file: string;
-    line: number;
-    column: number;
+    // backend sends start_line/end_line; line is a fallback alias
+    start_line?: number;
+    end_line?: number;
+    line?: number;
+    column?: number;
   };
   evidence?: {
     source?: string;
@@ -19,6 +22,19 @@ export interface VulcanVuln {
   };
   analysis?: {
     remediation?: string;
+    llm_classification?: {
+      remediation?: string;
+      explanation?: string;
+      severity?: string;
+      exploitability?: number;
+      confidence?: number;
+      classification?: string;
+    };
+    static_detection?: {
+      severity?: string;
+      confidence?: number;
+      reason?: string;
+    };
   };
   patch?: {
     status?: string;

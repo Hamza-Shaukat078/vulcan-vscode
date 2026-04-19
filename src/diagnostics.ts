@@ -28,8 +28,8 @@ export function setVulns(uri: vscode.Uri, vulns: VulcanVuln[]): void {
   vulnMap.set(uri.toString(), vulns);
 
   const diagnostics: vscode.Diagnostic[] = vulns.map((v) => {
-    // Backend lines are 1-based; VS Code lines are 0-based
-    const line = Math.max(0, (v.location.line ?? 1) - 1);
+    // Backend sends start_line (1-based); VS Code lines are 0-based
+    const line = Math.max(0, (v.location.start_line ?? v.location.line ?? 1) - 1);
     const col = Math.max(0, (v.location.column ?? 1) - 1);
     const range = new vscode.Range(line, col, line, col + 200);
 
@@ -66,7 +66,7 @@ export function getVulnAt(
 ): VulcanVuln | undefined {
   const vulns = getVulnsForUri(uri);
   return vulns.find((v) => {
-    const line = Math.max(0, (v.location.line ?? 1) - 1);
+    const line = Math.max(0, (v.location.start_line ?? v.location.line ?? 1) - 1);
     return position.line === line;
   });
 }

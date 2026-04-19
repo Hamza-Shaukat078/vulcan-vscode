@@ -14,7 +14,7 @@ export class VulcanCodeLensProvider implements vscode.CodeLensProvider {
   ): vscode.CodeLens[] {
     const vulns = diagnostics.getVulnsForUri(document.uri);
     return vulns.map((v) => {
-      const line = Math.max(0, (v.location.line ?? 1) - 1);
+      const line = Math.max(0, (v.location.start_line ?? v.location.line ?? 1) - 1);
       const range = new vscode.Range(line, 0, line, 0);
       const severity =
         v.severity === "CRITICAL"

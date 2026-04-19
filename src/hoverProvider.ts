@@ -44,10 +44,9 @@ export class VulcanHoverProvider implements vscode.HoverProvider {
     if (vuln.evidence?.dataflow) {
       md.appendMarkdown(`**Data flow:** \`${vuln.evidence.dataflow}\`  \n`);
     }
-    if (vuln.analysis?.remediation) {
-      md.appendMarkdown(
-        `\n**Remediation:** ${vuln.analysis.remediation}  \n`
-      );
+    const remediation = vuln.analysis?.llm_classification?.remediation ?? vuln.analysis?.remediation;
+    if (remediation) {
+      md.appendMarkdown(`\n**Remediation:** ${remediation}  \n`);
     }
 
     // "Fix with Vulcan" inline command link
