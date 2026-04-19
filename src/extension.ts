@@ -13,7 +13,7 @@ import {
 } from "./patchProvider";
 
 const SUPPORTED_LANGS = ["python", "javascript", "typescript"];
-const CHANGE_DEBOUNCE_MS = 1000;
+const CHANGE_DEBOUNCE_MS = 2500;
 const MAX_CONCURRENT_SCANS = 3;
 const MAX_FILE_LINES = 600;
 
@@ -321,7 +321,7 @@ async function scanDocumentSilent(
       doc.fileName.split(/[\\/]/).pop() ?? "file",
       token
     );
-    const vulns = result.vulnerabilities ?? [];
+    const vulns = (result.vulnerabilities ?? []).filter(v => (v.confidence ?? 0) >= 0.5);
     diagStore.setVulns(doc.uri, vulns);
     scannedUris.add(key);
     return vulns.length;

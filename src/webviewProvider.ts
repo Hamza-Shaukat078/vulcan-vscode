@@ -174,18 +174,20 @@ export class VulcanWebviewProvider implements vscode.WebviewViewProvider {
     --mono:     var(--vscode-editor-font-family, 'Cascadia Code', 'Courier New', monospace);
   }
 
+  html { height: 100%; }
+
   body {
     font-family: var(--font);
     font-size: 12px;
     color: var(--text);
     background: var(--bg);
-    height: 100vh;
-    overflow-x: hidden;
+    height: 100%;
+    overflow: hidden;
     user-select: none;
   }
 
   /* ── Screens ─────────────────────────────────────────────────────────── */
-  .screen { display: none; flex-direction: column; height: 100vh; }
+  .screen { display: none; flex-direction: column; height: 100%; }
   .screen.active { display: flex; }
 
   /* ══════════════════════════════════════════
@@ -973,7 +975,7 @@ function sevClass(sev) {
 function vulnRow(v, fullPath) {
   const sc   = sevClass(v.severity);
   const label = (v.type || '').replace(/_/g, ' ');
-  const line  = v.location?.line ?? v.location?.start_line ?? '';
+  const line  = v.location?.start_line ?? v.location?.line ?? '';
   const cwe   = v.cwe || '';
   return \`<div class="vuln-item" onclick="showDetail('\${esc(v.id)}')"
       title="Click for details — \${esc(v.type)}\${cwe ? ' · ' + cwe : ''}">
@@ -997,7 +999,7 @@ function showDetail(id) {
   const sc    = sevClass(v.severity);
   const label = (v.type || '').replace(/_/g, ' ');
   const sev   = (v.severity || 'LOW').toUpperCase();
-  const line  = v.location?.line ?? v.location?.start_line ?? '';
+  const line  = v.location?.start_line ?? v.location?.line ?? '';
   const conf  = Math.round((v.confidence ?? 0) * 100);
 
   document.getElementById('detail-header-title').textContent = label;
@@ -1048,10 +1050,11 @@ function showDetail(id) {
       <div class="detail-rows">\${evidenceRows}</div>
     </div>\` : '';
 
-  const remediationSection = v.analysis?.remediation ? \`
+  const remediation = v.analysis?.llm_classification?.remediation ?? v.analysis?.remediation;
+  const remediationSection = remediation ? \`
     <div class="detail-section">
       <div class="detail-section-title">Remediation</div>
-      <div class="remediation-text">\${esc(v.analysis.remediation)}</div>
+      <div class="remediation-text">\${esc(remediation)}</div>
     </div>\` : '';
 
   document.getElementById('detail-body').innerHTML = \`

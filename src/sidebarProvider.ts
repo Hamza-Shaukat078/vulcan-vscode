@@ -34,7 +34,7 @@ class VulnItem extends vscode.TreeItem {
         ? "warning"
         : "info";
     this.iconPath = new vscode.ThemeIcon(icon);
-    this.description = `Line ${vuln.location.line} · ${vuln.severity}`;
+    this.description = `Line ${vuln.location.start_line ?? vuln.location.line ?? '?'} · ${vuln.severity}`;
     this.tooltip = [
       `${vuln.type} — ${vuln.severity}`,
       vuln.cwe ? `CWE: ${vuln.cwe}` : "",
