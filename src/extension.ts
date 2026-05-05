@@ -231,9 +231,7 @@ async function scanWorkspace(): Promise<void> {
     vscode.workspace.findFiles("**/*.{js,ts}", exclude, 200),
   ]);
 
-  const allFiles = [...pyFiles, ...jsFiles].filter(
-    uri => !scannedUris.has(uri.toString())
-  );
+  const allFiles = [...pyFiles, ...jsFiles];
 
   if (allFiles.length === 0) {
     workspaceScanRunning = false;
