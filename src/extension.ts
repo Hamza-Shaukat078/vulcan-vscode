@@ -24,6 +24,19 @@ const changeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const scannedUris  = new Set<string>();
 let workspaceScanRunning = false;
 
+// Tracks what the user last explicitly chose to display in the panel.
+// 'all' = workspace view; 'file' = single-file view.
+let webviewViewMode: 'all' | 'file' = 'all';
+let webviewViewUri: vscode.Uri | undefined;
+
+function refreshWebviewVulns(): void {
+  if (webviewViewMode === 'file' && webviewViewUri) {
+    webview.updateVulnsForFile(webviewViewUri);
+  } else {
+    webview.updateVulns();
+  }
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   auth.init(context);
   diagStore.init(context);
@@ -50,6 +63,8 @@ export function activate(context: vscode.ExtensionContext): void {
     await auth.logout();
     diagStore.clearAll();
     scannedUris.clear();
+    webviewViewMode = 'all';
+    webviewViewUri = undefined;
     codelens.refresh();
     statusBar.setLoggedOut();
     webview.setLoggedOut();
@@ -62,12 +77,28 @@ export function activate(context: vscode.ExtensionContext): void {
       setTimeout(() => webview.setScanIdle(), 2000);
       return;
     }
-    scannedUris.delete(editor.document.uri.toString());
-    await scanDocument(editor.document);
+    const token = await auth.getToken();
+    if (!token) { statusBar.setLoggedOut(); return; }
+    const doc = editor.document;
+    const fname = doc.fileName.split(/[\\/]/).pop() ?? "file";
+    statusBar.setScanning();
+    webview.setScanStatus(`Scanning ${fname}…`);
+    scannedUris.delete(doc.uri.toString());
+    await scanDocumentSilent(doc, token);
+    codelens.refresh();
+    webviewViewMode = 'file';
+    webviewViewUri = doc.uri;
+    webview.updateVulnsForFile(doc.uri);
+    const allVulns = [...diagStore.allVulns().values()].flat();
+    const crits = allVulns.filter(v => v.severity === "CRITICAL").length;
+    const highs = allVulns.filter(v => v.severity === "HIGH").length;
+    statusBar.setResults(crits, highs, allVulns.length);
     webview.setScanIdle();
   });
 
   webview.onScanWorkspace(async () => {
+    webviewViewMode = 'all';
+    webviewViewUri = undefined;
     scannedUris.clear();
     await scanWorkspace();
   });
@@ -123,12 +154,28 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("vulcan.scanFile", async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor || !SUPPORTED_LANGS.includes(editor.document.languageId)) { return; }
-      scannedUris.delete(editor.document.uri.toString());
-      await scanDocument(editor.document);
+      const token = await auth.getToken();
+      if (!token) { statusBar.setLoggedOut(); return; }
+      const doc = editor.document;
+      const fname = doc.fileName.split(/[\\/]/).pop() ?? "file";
+      statusBar.setScanning();
+      webview.setScanStatus(`Scanning ${fname}…`);
+      scannedUris.delete(doc.uri.toString());
+      await scanDocumentSilent(doc, token);
+      codelens.refresh();
+      webviewViewMode = 'file';
+      webviewViewUri = doc.uri;
+      webview.updateVulnsForFile(doc.uri);
+      const allVulns = [...diagStore.allVulns().values()].flat();
+      const crits = allVulns.filter(v => v.severity === "CRITICAL").length;
+      const highs = allVulns.filter(v => v.severity === "HIGH").length;
+      statusBar.setResults(crits, highs, allVulns.length);
       webview.setScanIdle();
     }),
 
     vscode.commands.registerCommand("vulcan.scanWorkspace", async () => {
+      webviewViewMode = 'all';
+      webviewViewUri = undefined;
       scannedUris.clear();
       await scanWorkspace();
     }),
@@ -143,6 +190,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("vulcan.clearDiagnostics", () => {
       diagStore.clearAll();
       scannedUris.clear();
+      webviewViewMode = 'all';
+      webviewViewUri = undefined;
       codelens.refresh();
       statusBar.setIdle();
       webview.updateVulns();
@@ -191,10 +240,14 @@ export function activate(context: vscode.ExtensionContext): void {
     // Clear stale diagnostics on file delete
     vscode.workspace.onDidDeleteFiles(event => {
       for (const uri of event.files) {
+        if (webviewViewUri && uri.toString() === webviewViewUri.toString()) {
+          webviewViewMode = 'all';
+          webviewViewUri = undefined;
+        }
         diagStore.clearUri(uri);
         scannedUris.delete(uri.toString());
       }
-      webview.updateVulns();
+      refreshWebviewVulns();
       codelens.refresh();
     })
   );
@@ -261,13 +314,13 @@ async function scanWorkspace(): Promise<void> {
       pct
     );
     statusBar.setScanning();
-    webview.updateVulns();
+    refreshWebviewVulns();
     codelens.refresh();
   }
 
   workspaceScanRunning = false;
   webview.setScanIdle();
-  webview.updateVulns();
+  refreshWebviewVulns();
   codelens.refresh();
 
   const allVulns = [...diagStore.allVulns().values()].flat();
@@ -296,7 +349,7 @@ async function scanDocument(doc: vscode.TextDocument): Promise<void> {
   await scanDocumentSilent(doc, token);
 
   codelens.refresh();
-  webview.updateVulns();
+  refreshWebviewVulns();
 
   const allVulns = [...diagStore.allVulns().values()].flat();
   const crits = allVulns.filter(v => v.severity === "CRITICAL").length;

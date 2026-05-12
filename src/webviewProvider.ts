@@ -65,6 +65,9 @@ export class VulcanWebviewProvider implements vscode.WebviewViewProvider {
             "vulcan"
           );
           break;
+        case "clearDiagnostics":
+          await vscode.commands.executeCommand("vulcan.clearDiagnostics");
+          break;
       }
     }, undefined, this._ctx.subscriptions);
   }
@@ -99,6 +102,11 @@ export class VulcanWebviewProvider implements vscode.WebviewViewProvider {
     this.post({ type: "updateVulns", groups });
   }
 
+  updateVulnsForFile(uri: vscode.Uri): void {
+    const groups = this._buildVulnGroupsForFile(uri);
+    this.post({ type: "updateVulns", groups });
+  }
+
   // ── Helpers ───────────────────────────────────────────────────────────────
   private async _pushCurrentState(): Promise<void> {
     const token = await auth.getToken();
@@ -123,6 +131,17 @@ export class VulcanWebviewProvider implements vscode.WebviewViewProvider {
       groups.push({ file, fullPath, vulns });
     }
     return groups;
+  }
+
+  private _buildVulnGroupsForFile(uri: vscode.Uri): VulnGroup[] {
+    const vulns = diagStore.getVulnsForUri(uri);
+    if (vulns.length === 0) { return []; }
+    const fullPath = uri.fsPath;
+    const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "";
+    const file = ws
+      ? fullPath.replace(ws, "").replace(/^[\\/]/, "")
+      : fullPath.split(/[\\/]/).slice(-2).join("/");
+    return [{ file, fullPath, vulns }];
   }
 
   private async _jumpToLine(fullPath: string, line: number): Promise<void> {
@@ -302,9 +321,7 @@ export class VulcanWebviewProvider implements vscode.WebviewViewProvider {
      DASHBOARD SCREEN
   ══════════════════════════════════════════ */
   #dashboard { overflow: hidden; }
-  .dash-body { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
-  .dash-body::-webkit-scrollbar { width: 3px; }
-  .dash-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  .dash-body { flex: 1; overflow: hidden; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
 
   /* Card */
   .card {
@@ -412,6 +429,20 @@ export class VulcanWebviewProvider implements vscode.WebviewViewProvider {
     margin-left: auto; transition: border-color .12s, color .12s;
   }
   .clear-btn:hover { border-color: var(--crit); color: var(--crit); }
+
+  #vuln-list-card {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  #vuln-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+  }
+  #vuln-list::-webkit-scrollbar { width: 3px; }
+  #vuln-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
   .vuln-empty {
     padding: 28px 16px; text-align: center; color: var(--muted);
